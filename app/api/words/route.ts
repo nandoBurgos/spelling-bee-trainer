@@ -58,7 +58,7 @@ export async function GET(request: Request) {
     // Get total count for pagination
     let countQuery = supabaseAdmin
       .from("words")
-      .select("count", { count: "exact", head: true })
+      .select("id", { count: "exact", head: true })
 
     if (difficulty && difficulty !== "all") {
       countQuery = countQuery.eq("difficulty", difficulty)
@@ -77,9 +77,14 @@ export async function GET(request: Request) {
       countQuery = countQuery.eq("is_custom", false)
     }
 
-    const { count } = await countQuery
+    const { count, error: countError } = await countQuery
 
-    return NextResponse.json({ words: words || [], total: count || 0 })
+    if (countError) {
+      console.error("Count query error:", countError)
+    }
+
+    return NextResponse.json({ words: words || [], total: (count as number) || 0 })
+  } catch (error) {
     console.error("Get words error:", error)
     return NextResponse.json({ error: "Error al obtener palabras" }, { status: 500 })
   }
