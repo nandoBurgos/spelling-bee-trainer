@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server"
-import pool from "@/lib/db"
+import { supabaseAdmin } from "@/lib/supabase"
 import { getSession } from "@/lib/auth"
-import type { RowDataPacket } from "mysql2"
 
 export async function GET() {
   try {
@@ -12,12 +11,21 @@ export async function GET() {
       return NextResponse.json({ lists: [] })
     }
 
-    const query = `SELECT id, name, user_id FROM word_lists WHERE user_id = ? ORDER BY name ASC`
-    const [rows] = await pool.execute<RowDataPacket[]>(query, [userId])
+    const { data: lists, error } = await supabaseAdmin
+      .from("word_lists")
+      .select("id, name, user_id")
+      .eq("user_id", userId)
+      .order("name", { ascending: true })
 
-    return NextResponse.json({ lists: rows })
+    if (error) {
+      console.error("Query error:", error)
+      return NextResponse.json({ error: "Error al obtener listas" }, { status: 500 })
+    }
+
+    return NextResponse.json({ lists: lists || [] })
   } catch (error) {
     console.error("Get lists error:", error)
     return NextResponse.json({ error: "Error al obtener listas" }, { status: 500 })
   }
 }
+

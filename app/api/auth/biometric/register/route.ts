@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server"
-import pool from "@/lib/db"
+import { supabaseAdmin } from "@/lib/supabase"
 import { getSession } from "@/lib/auth"
 
 export async function POST(request: Request) {
@@ -16,7 +16,15 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Credential ID requerido" }, { status: 400 })
     }
 
-    await pool.execute("UPDATE users SET biometric_credential_id = ? WHERE id = ?", [credentialId, session.user.id])
+    const { error } = await supabaseAdmin
+      .from("users")
+      .update({ biometric_credential_id: credentialId })
+      .eq("id", session.user.id)
+
+    if (error) {
+      console.error("Update error:", error)
+      return NextResponse.json({ error: "Error al registrar biometría" }, { status: 500 })
+    }
 
     return NextResponse.json({ success: true })
   } catch (error) {

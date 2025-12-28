@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server"
-import pool from "@/lib/db"
+import { supabaseAdmin } from "@/lib/supabase"
 import { getSession } from "@/lib/auth"
-import type { ResultSetHeader } from "mysql2"
 import type { ParsedWord } from "@/lib/parse-import"
 
 export async function POST(request: Request) {
@@ -26,11 +25,18 @@ export async function POST(request: Request) {
 
     // Create word list if name provided
     if (listName) {
-      const [listResult] = await pool.execute<ResultSetHeader>("INSERT INTO word_lists (name, user_id) VALUES (?, ?)", [
-        listName,
-        userId,
-      ])
-      listId = listResult.insertId
+      const { data: newList, error: listError } = await supabaseAdmin
+        .from("word_lists")
+        .insert({ name: listName, user_id: userId })
+        .select("id")
+        .single()
+
+      if (listError || !newList) {
+        console.error("List creation error:", listError)
+        return NextResponse.json({ error: "Error al crear lista" }, { status: 500 })
+      }
+
+      listId = newList.id
     }
 
     // Insert words
@@ -39,27 +45,54 @@ export async function POST(request: Request) {
 
     for (const word of words) {
       try {
-        const [result] = await pool.execute<ResultSetHeader>(
-          `INSERT INTO words (word, definition, example, difficulty, user_id, is_custom) 
-           VALUES (?, ?, ?, ?, ?, TRUE)
-           ON DUPLICATE KEY UPDATE id=id`,
-          [word.word, word.definition, word.example || "", word.difficulty || "medium", userId],
-        )
+        // Insert word (Supabase handles duplicates via constraints)
+        const { data: existingWord, error: checkError } = await supabaseAdmin
+          .from("words")
+          .select("id")
+          .eq("word", word.word)
+          .eq("user_id", userId)
+          .eq("is_custom", true)
+          .single()
 
-        if (result.insertId && listId) {
-          // Add to list
-          await pool.execute("INSERT IGNORE INTO word_list_items (list_id, word_id) VALUES (?, ?)", [
-            listId,
-            result.insertId,
-          ])
-        }
+        let wordId: number
 
-        if (result.affectedRows > 0) {
-          imported++
-        } else {
+        if (!checkError && existingWord) {
+          // Word exists
+          wordId = existingWord.id
           skipped++
+        } else {
+          // Insert new word
+          const { data: newWord, error: insertError } = await supabaseAdmin
+            .from("words")
+            .insert({
+              word: word.word,
+              definition: word.definition,
+              example: word.example || "",
+              difficulty: word.difficulty || "medium",
+              user_id: userId,
+              is_custom: true,
+            })
+            .select("id")
+            .single()
+
+          if (insertError || !newWord) {
+            skipped++
+            continue
+          }
+
+          wordId = newWord.id
+          imported++
         }
-      } catch {
+
+        // Add to list if listId exists
+        if (listId) {
+          await supabaseAdmin.from("word_list_items").insert({
+            list_id: listId,
+            word_id: wordId,
+          })
+        }
+      } catch (error) {
+        console.error("Word import error:", error)
         skipped++
       }
     }

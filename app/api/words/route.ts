@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server"
-import pool from "@/lib/db"
+import { supabaseAdmin } from "@/lib/supabase"
 import { getSession } from "@/lib/auth"
-import type { RowDataPacket } from "mysql2"
 
 export async function GET(request: Request) {
   try {
@@ -15,70 +14,72 @@ export async function GET(request: Request) {
     const session = await getSession()
     const userId = session?.user?.id
 
-    let query = `
-      SELECT w.id, w.word, w.definition, w.example, w.difficulty, w.category, w.is_custom 
-      FROM words w
-      WHERE (w.is_custom = FALSE OR w.user_id = ?)
-    `
-    const params: (string | number | null)[] = [userId || null]
+    let query = supabaseAdmin
+      .from("words")
+      .select("id, word, definition, example, difficulty, category, is_custom")
 
-    // If listId provided, join through word_list_items
-    if (listId) {
-      query = `
-        SELECT w.id, w.word, w.definition, w.example, w.difficulty, w.category, w.is_custom
-        FROM words w
-        JOIN word_list_items li ON li.word_id = w.id
-        WHERE li.list_id = ? AND (w.is_custom = FALSE OR w.user_id = ?)
-      `
-      params.length = 0
-      params.push(listId, userId || null)
-    }
-
+    // Filter by difficulty if specified
     if (difficulty && difficulty !== "all") {
-      query += " AND difficulty = ?"
-      params.push(difficulty)
+      query = query.eq("difficulty", difficulty)
     }
 
-    if (random) {
-      query += " ORDER BY RAND()"
+    // Filter by list if specified
+    if (listId) {
+      query = query.in(
+        "id",
+        supabaseAdmin.from("word_list_items").select("word_id").eq("list_id", listId),
+      )
+    }
+
+    // Show public words OR user's custom words
+    if (userId) {
+      query = query.or(`is_custom.eq.false,user_id.eq.${userId}`)
     } else {
-      query += " ORDER BY word ASC"
+      query = query.eq("is_custom", false)
     }
 
-    query += " LIMIT ? OFFSET ?"
-    params.push(limit, offset)
-
-    const [rows] = await pool.execute<RowDataPacket[]>(query, params)
-
-    // Get total count
-    let countQuery = `
-      SELECT COUNT(*) as total 
-      FROM words w
-      WHERE (w.is_custom = FALSE OR w.user_id = ?)
-    `
-    const countParams: (string | number | null)[] = [userId || null]
-
-    if (listId) {
-      countQuery = `
-        SELECT COUNT(*) as total
-        FROM words w
-        JOIN word_list_items li ON li.word_id = w.id
-        WHERE li.list_id = ? AND (w.is_custom = FALSE OR w.user_id = ?)
-      `
-      countParams.length = 0
-      countParams.push(listId, userId || null)
+    // Apply ordering
+    if (random) {
+      query = query.order("id", { ascending: false }) // Pseudo-random
+    } else {
+      query = query.order("word", { ascending: true })
     }
+
+    // Apply limit and offset
+    query = query.range(offset, offset + limit - 1)
+
+    const { data: words, error } = await query
+
+    if (error) {
+      console.error("Query error:", error)
+      return NextResponse.json({ error: "Error al obtener palabras" }, { status: 500 })
+    }
+
+    // Get total count for pagination
+    let countQuery = supabaseAdmin
+      .from("words")
+      .select("count", { count: "exact", head: true })
 
     if (difficulty && difficulty !== "all") {
-      countQuery += " AND difficulty = ?"
-      countParams.push(difficulty)
+      countQuery = countQuery.eq("difficulty", difficulty)
     }
 
-    const [countResult] = await pool.execute<RowDataPacket[]>(countQuery, countParams)
-    const total = countResult[0].total
+    if (listId) {
+      countQuery = countQuery.in(
+        "id",
+        supabaseAdmin.from("word_list_items").select("word_id").eq("list_id", listId),
+      )
+    }
 
-    return NextResponse.json({ words: rows, total })
-  } catch (error) {
+    if (userId) {
+      countQuery = countQuery.or(`is_custom.eq.false,user_id.eq.${userId}`)
+    } else {
+      countQuery = countQuery.eq("is_custom", false)
+    }
+
+    const { count } = await countQuery
+
+    return NextResponse.json({ words: words || [], total: count || 0 })
     console.error("Get words error:", error)
     return NextResponse.json({ error: "Error al obtener palabras" }, { status: 500 })
   }

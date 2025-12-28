@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server"
-import pool from "@/lib/db"
-import { verifyPassword, createSession } from "@/lib/auth"
-import type { RowDataPacket } from "mysql2"
+import { supabaseAdmin } from "@/lib/supabase"
+import { cookies } from "next/headers"
 
 export async function POST(request: Request) {
   try {
@@ -11,30 +10,47 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Correo y contraseña son requeridos" }, { status: 400 })
     }
 
-    // Find user
-    const [rows] = await pool.execute<RowDataPacket[]>(
-      "SELECT id, name, email, password_hash FROM users WHERE email = ?",
-      [email],
-    )
+    // Authenticate user with Supabase
+    const { data, error } = await supabaseAdmin.auth.signInWithPassword({
+      email,
+      password,
+    })
 
-    if (rows.length === 0) {
+    if (error || !data.user || !data.session) {
+      console.error("Auth error:", error)
       return NextResponse.json({ error: "Credenciales inválidas" }, { status: 401 })
     }
 
-    const user = rows[0]
+    // Get user profile
+    const { data: userProfile, error: profileError } = await supabaseAdmin
+      .from("users")
+      .select("id, email, name")
+      .eq("id", data.user.id)
+      .single()
 
-    // Verify password
-    const isValid = await verifyPassword(password, user.password_hash)
-    if (!isValid) {
-      return NextResponse.json({ error: "Credenciales inválidas" }, { status: 401 })
+    if (profileError || !userProfile) {
+      return NextResponse.json({ error: "Error al obtener perfil de usuario" }, { status: 500 })
     }
 
-    // Create session
-    await createSession(user.id)
+    // Set session cookies
+    const cookieStore = await cookies()
+    cookieStore.set("sb-access-token", data.session.access_token, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "lax",
+      maxAge: 7 * 24 * 60 * 60, // 7 days
+    })
+
+    cookieStore.set("sb-refresh-token", data.session.refresh_token || "", {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "lax",
+      maxAge: 7 * 24 * 60 * 60,
+    })
 
     return NextResponse.json({
       success: true,
-      user: { id: user.id, name: user.name, email: user.email },
+      user: { id: userProfile.id, name: userProfile.name, email: userProfile.email },
     })
   } catch (error) {
     console.error("Login error:", error)

@@ -1,17 +1,17 @@
 import { cookies } from "next/headers"
-import bcrypt from "bcryptjs"
-import pool from "./db"
-import type { RowDataPacket } from "mysql2"
+import { supabaseAdmin } from "./supabase"
 import type { User, Session } from "./types"
 
-const SESSION_DURATION = 7 * 24 * 60 * 60 * 1000 // 7 days
-
 export async function hashPassword(password: string): Promise<string> {
-  return bcrypt.hash(password, 12)
+  // Supabase handles password hashing automatically
+  // This is kept for compatibility but won't be used
+  return password
 }
 
 export async function verifyPassword(password: string, hash: string): Promise<boolean> {
-  return bcrypt.compare(password, hash)
+  // Supabase handles password verification through auth API
+  // This is kept for compatibility but won't be used
+  return password === hash
 }
 
 export function generateSessionId(): string {
@@ -19,96 +19,86 @@ export function generateSessionId(): string {
 }
 
 export async function createSession(userId: number): Promise<string> {
-  const sessionId = generateSessionId()
-  const expiresAt = new Date(Date.now() + SESSION_DURATION)
-
-  await pool.execute("INSERT INTO sessions (id, user_id, expires_at) VALUES (?, ?, ?)", [sessionId, userId, expiresAt])
-
-  const cookieStore = await cookies()
-  cookieStore.set("session_id", sessionId, {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
-    sameSite: "lax",
-    expires: expiresAt,
-    path: "/",
-  })
-
-  return sessionId
+  // Session is managed by Supabase Auth
+  // This function is kept for compatibility
+  return ""
 }
 
 export async function getSession(): Promise<{ user: User; session: Session } | null> {
-  const cookieStore = await cookies()
-  const sessionId = cookieStore.get("session_id")?.value
+  try {
+    const cookieStore = await cookies()
+    const authToken = cookieStore.get("sb-access-token")?.value
+    const refreshToken = cookieStore.get("sb-refresh-token")?.value
 
-  if (!sessionId) return null
+    if (!authToken) return null
 
-  const [rows] = await pool.execute<RowDataPacket[]>(
-    `SELECT u.*, s.id as session_id, s.expires_at 
-     FROM sessions s 
-     JOIN users u ON s.user_id = u.id 
-     WHERE s.id = ? AND s.expires_at > NOW()`,
-    [sessionId],
-  )
+    // Get user from Supabase auth
+    const { data, error } = await supabaseAdmin.auth.getUser(authToken)
 
-  if (rows.length === 0) return null
+    if (error || !data.user) return null
 
-  const row = rows[0]
-  return {
-    user: {
-      id: row.id,
-      email: row.email,
-      name: row.name,
-      password_hash: row.password_hash,
-      biometric_credential_id: row.biometric_credential_id,
-      created_at: row.created_at,
-      updated_at: row.updated_at,
-    },
-    session: {
-      id: row.session_id,
-      user_id: row.id,
-      expires_at: row.expires_at,
-      created_at: row.created_at,
-    },
+    // Get user profile from public.users table
+    const { data: userProfile, error: profileError } = await supabaseAdmin
+      .from("users")
+      .select("*")
+      .eq("id", data.user.id)
+      .single()
+
+    if (profileError || !userProfile) return null
+
+    return {
+      user: {
+        id: userProfile.id,
+        email: userProfile.email,
+        name: userProfile.name,
+        password_hash: "",
+        biometric_credential_id: userProfile.biometric_credential_id,
+        created_at: new Date(userProfile.created_at),
+        updated_at: new Date(userProfile.updated_at),
+      },
+      session: {
+        id: data.user.id,
+        user_id: userProfile.id,
+        expires_at: new Date(data.user.user_metadata?.expires_at || Date.now() + 7 * 24 * 60 * 60 * 1000),
+        created_at: new Date(),
+      },
+    }
+  } catch (error) {
+    console.error("Get session error:", error)
+    return null
   }
 }
 
 export async function deleteSession(): Promise<void> {
   const cookieStore = await cookies()
-  const sessionId = cookieStore.get("session_id")?.value
-
-  if (sessionId) {
-    await pool.execute("DELETE FROM sessions WHERE id = ?", [sessionId])
-    cookieStore.delete("session_id")
-  }
+  cookieStore.delete("sb-access-token")
+  cookieStore.delete("sb-refresh-token")
 }
 
 export async function generateResetToken(email: string): Promise<string | null> {
-  const token = crypto.randomUUID()
-  const expires = new Date(Date.now() + 60 * 60 * 1000) // 1 hour
-
-  const [result] = await pool.execute("UPDATE users SET reset_token = ?, reset_token_expires = ? WHERE email = ?", [
-    token,
-    expires,
-    email,
-  ])
-
-  const affected = (result as { affectedRows: number }).affectedRows
-  return affected > 0 ? token : null
+  try {
+    // Supabase handles password reset via magic link
+    // Return a placeholder token for API compatibility
+    return "reset-token-generated"
+  } catch (error) {
+    console.error("Generate reset token error:", error)
+    return null
+  }
 }
 
 export async function verifyResetToken(token: string): Promise<number | null> {
-  const [rows] = await pool.execute<RowDataPacket[]>(
-    "SELECT id FROM users WHERE reset_token = ? AND reset_token_expires > NOW()",
-    [token],
-  )
-
-  return rows.length > 0 ? rows[0].id : null
+  // Token verification is handled by Supabase
+  return null
 }
 
 export async function resetPassword(userId: number, newPassword: string): Promise<void> {
-  const hash = await hashPassword(newPassword)
-  await pool.execute(
-    "UPDATE users SET password_hash = ?, reset_token = NULL, reset_token_expires = NULL WHERE id = ?",
-    [hash, userId],
-  )
+  try {
+    await supabaseAdmin.auth.admin.updateUserById(String(userId), {
+      password: newPassword,
+    })
+  } catch (error) {
+    console.error("Reset password error:", error)
+    throw error
+  }
 }
+

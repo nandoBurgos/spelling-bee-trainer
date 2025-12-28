@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server"
-import pool from "@/lib/db"
+import { supabaseAdmin } from "@/lib/supabase"
 import { getSession } from "@/lib/auth"
-import type { RowDataPacket } from "mysql2"
 
 export async function GET(request: Request) {
   try {
@@ -12,24 +11,36 @@ export async function GET(request: Request) {
     const session = await getSession()
     const userId = session?.user?.id
 
-    let query = `
-      SELECT id, word, definition, example, difficulty, category, is_custom 
-      FROM words 
-      WHERE (is_custom = FALSE OR user_id = ?)
-    `
-    const params: (string | number | null)[] = [userId || null]
+    let query = supabaseAdmin
+      .from("words")
+      .select("id, word, definition, example, difficulty, category, is_custom")
 
+    // Filter by difficulty if specified
     if (difficulty && difficulty !== "all") {
-      query += " AND difficulty = ?"
-      params.push(difficulty)
+      query = query.eq("difficulty", difficulty)
     }
 
-    query += " ORDER BY RAND() LIMIT ?"
-    params.push(count)
+    // Show public words OR user's custom words
+    if (userId) {
+      query = query.or(`is_custom.eq.false,user_id.eq.${userId}`)
+    } else {
+      query = query.eq("is_custom", false)
+    }
 
-    const [rows] = await pool.execute<RowDataPacket[]>(query, params)
+    // Get random words - Supabase doesn't have RAND(), so we'll fetch and shuffle
+    const { data: words, error } = await query.limit(count * 2) // Fetch more to account for filtering
 
-    return NextResponse.json({ words: rows })
+    if (error) {
+      console.error("Query error:", error)
+      return NextResponse.json({ error: "Error al obtener palabra" }, { status: 500 })
+    }
+
+    // Shuffle and limit
+    const shuffled = (words || [])
+      .sort(() => Math.random() - 0.5)
+      .slice(0, count)
+
+    return NextResponse.json({ words: shuffled })
   } catch (error) {
     console.error("Get random word error:", error)
     return NextResponse.json({ error: "Error al obtener palabra" }, { status: 500 })
